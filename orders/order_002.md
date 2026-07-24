@@ -12,7 +12,7 @@
     * ライブラリのインストール
     * ライブラリの読み込み，変数のインスタンス化
     * Gradioの実行
-* このプログラムは `yryo1005/OpenCampus_Demo` のリポジトリにPublicとして公開されます
+* このプログラムは `yryo1005/OpenCampus_Demo` リポジトリの `main` ブランチにPublicとして公開されます
 * ipynbノートブックの上部にColabで開くボタンを追加してください
 ```text
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/yryo1005/OpenCampus_Demo/blob/main/{ノートブック名}.ipynb)
@@ -21,6 +21,7 @@
 `@colab_env_info.txt` がGoogle Colabの環境情報なので，これを参考にしてください
 GeminiのAPIキーが `tokens.json` の `gemini` キーに保存されているので，必要に応じて使用してください
 
-Yomitokuを用いた手書き文字認識を実装してください
-* 手書き画像をサンプルから選択，またはカメラで撮影しこれから文字起こしをします
-* APIのキーは不要なので，読み込むプログラムを記述しないでください
+Stable Diffusionを用いた画像生成を実装してください
+* ユーザーは日本語または英語のプロンプトを入力します
+* 日本語のプロンプトはGemini APIを用いて英語に翻訳します
+* Hugging Faceでユーザー認証が必要であればそのURLを共有してください
