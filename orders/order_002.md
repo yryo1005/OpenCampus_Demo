@@ -20,6 +20,7 @@
 
 `@colab_env_info.txt` がGoogle Colabの環境情報なので，これを参考にしてください
 GeminiのAPIキーが `tokens.json` の `gemini` キーに保存されているので，必要に応じて使用してください
+Geminiは無料の `gemini-2.5-flash` を用いてください
 
 Stable Diffusionを用いた画像生成を実装してください
 * ユーザーは日本語または英語のプロンプトを入力します
