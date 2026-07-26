@@ -1,6 +1,6 @@
-# document.md — AI着色デモ（OC_Colorize）
+# document.md — AI音楽生成デモ（OC_MusicGen）
 
-本ドキュメントは，オーダー `orders/order_009.md` に基づく AI 着色デモの構成と，主要関数の関係をまとめたものである．
+本ドキュメントは，オーダー `orders/order_010.md` に基づく AI 音楽生成デモの構成と，主要関数の関係をまとめたものである．
 
 ---
 
@@ -8,11 +8,11 @@
 
 | ファイル | 役割 |
 | :--- | :--- |
-| `OC_Colorize.ipynb` | Colab 上で完結する実行本体（インストール／初期化／Gradio） |
-| `OC_Colorize.md` | 高校生・実施者向けの操作説明 |
+| `OC_MusicGen.ipynb` | Colab 上で完結する実行本体（インストール／初期化／Gradio） |
+| `OC_MusicGen.md` | 高校生・実施者向けの操作説明 |
 | `document.md` | 本仕様・処理フローの解説 |
 
-着色は Colab 内の DDColor 推論のみで行い，Gemini API は用いない（API キー不要）．Hugging Face 認証も不要である（公開モデルを自動ダウンロード）．
+音楽生成は Colab 内の MusicGen 推論で行い，日本語プロンプトの英訳にのみ Gemini API（`gemini-2.5-flash`）を用いる．Hugging Face 認証は不要である（公開モデルを自動ダウンロード）．
 
 ---
 
@@ -20,114 +20,95 @@
 
 実行が途中で止まった場合に再開しやすいよう，次の段階に分割している．
 
-0. **設定** — `MIRROR_WEBCAM`，`MODEL_NAME`，`INPUT_SIZE`，`MAX_IMAGE_SIDE`
-1. **ライブラリのインストール** — DDColor リポジトリのクローン，`tqdm` / `huggingface_hub` の更新
-2. **ライブラリの読み込み，変数のインスタンス化** — フォント／サンプル画像のダウンロード，DDColor とヘルパの定義
+0. **設定** — `MODEL_ID`，`DURATION_SEC`，`GUIDANCE_SCALE`，`GEMINI_MODEL`
+1. **ライブラリのインストール** — `transformers` / `google-genai` の更新
+2. **ライブラリの読み込み，変数のインスタンス化** — `tokens.json`，MusicGen，ヘルパ関数
 3. **Gradio の実行** — UI 構築と `demo.launch(share=True)`
 
 ---
 
 ## 3. 処理フロー
 
-入力はカラー顔写真を想定する．デモの意図として，いったんモノクロへ落としてから AI に渡す．
+ユーザーは自然言語でジャンル・雰囲気・楽器などを指定する．日本語は Gemini で英語へ翻訳し，MusicGen が波形を生成する．
 
 ```mermaid
 flowchart TD
-    A[画像入力<br/>カメラ / アップロード / サンプル] --> B{左右反転?}
-    B -->|Yes| C[水平フリップ]
-    B -->|No| D[長辺リサイズ]
-    C --> D
-    D --> E[意図的にモノクロ化]
-    E --> F[DDColor<br/>Lab: L を保持し a,b を推定]
-    F --> G[元画像 / モノクロ / 着色]
-    G --> H[三点比較 + Gradio 出力]
+    A[テキスト入力<br/>日本語 / 英語] --> B{日本語を含む?}
+    B -->|Yes| C[Gemini<br/>音楽向け英語へ翻訳]
+    B -->|No| D[原文をそのまま使用]
+    C --> E[MusicGen<br/>テキスト条件付き生成]
+    D --> E
+    E --> F[波形 float32<br/>sampling_rate]
+    F --> G[Gradio Audio 再生]
 ```
 
-サンプル画像は推論とは独立に URL から取得し，Gradio Examples に渡す．
+サンプルプロンプトは推論とは独立に定数として保持し，Gradio Examples に渡す．
 
 ```mermaid
 flowchart LR
-    S1[SAMPLE_IMAGE_SOURCES] --> S2[prepare_sample_images]
-    S2 --> S3[gr.Examples]
-    S3 --> S4[Image へ流し込み]
-    S4 --> S5[colorize_face]
+    S1[SAMPLE_PROMPTS] --> S2[gr.Examples]
+    S2 --> S3[Textbox へ流し込み]
+    S3 --> S4[generate_music]
 ```
 
-モデル名と用途の対応は次のとおりである．
+秒数とトークン数の関係は次式で近似する．MusicGen は約 $50$ フレーム／秒でトークンを進める．
 
-| モデル名 | 用途 |
-| :--- | :--- |
-| `ddcolor_modelscope` | 画質重視（既定） |
-| `ddcolor_artistic` | アーティスティック寄り |
-| `ddcolor_paper_tiny` | 軽量・高速 |
-| `ddcolor_paper` | 論文再現用 |
+$$
+\max\_new\_tokens \approx \mathrm{round}(T \times 50)
+$$
+
+ここで $T$ は生成したい秒数（秒）である．
+
+モデルサイズと用途の対応は次のとおりである．
+
+| モデル ID | 規模 | 用途 |
+| :--- | :--- | :--- |
+| `facebook/musicgen-small` | 約 300M | T4 既定（速度重視） |
+| `facebook/musicgen-medium` | 約 1.5B | 品質寄り（VRAM・時間↑） |
 
 ---
 
 ## 4. 主要関数の仕様
 
-### 4.1 環境・データ準備
+### 4.1 環境・翻訳
 
 | 関数 | 概要 | 主な入出力 |
 | :--- | :--- | :--- |
+| `load_tokens` | `tokens.json` から API キーを読む | `path: Path` → `dict` |
 | `resolve_device` | CUDA 可否を判定する | → `str`（`"cuda"` / `"cpu"`） |
-| `download_file` | URL から画像を取得し長辺を制限して保存する | `url: str`, `save_path: Path` → `Path` |
-| `download_font` | 日本語ラベル用フォントを取得する | `url`, `save_path` → `Path` |
-| `prepare_sample_images` | サンプル顔写真を一括ダウンロードする | `sources`, `sample_dir` → `list[tuple[str, Path]]` |
-| `load_colorizer` | DDColor を HF から読み込みパイプライン化する | `model_name`, `input_size`, `device` → `ColorizationPipeline` |
+| `contains_japanese` | ひらがな・カタカナ・漢字の有無を判定する | `text: str` → `bool` |
+| `translate_prompt_to_english` | 日本語を MusicGen 向け英語へ翻訳する | `prompt`, `client`, `model` → `str` |
 
-### 4.2 前処理・着色
+### 4.2 音楽生成
 
 | 関数 | 概要 | 主な入出力 |
 | :--- | :--- | :--- |
-| `to_rgb_uint8` | Gradio 入力を RGB `uint8` に揃える | `image` → `np.ndarray (H,W,3)` または `None` |
-| `resize_max_side` | 長辺を上限以下へ縮小する | `rgb`, `max_side` → `np.ndarray` |
-| `to_grayscale_rgb` | カラーを意図的にモノクロ RGB へ変換する | `rgb (H,W,3)` → `np.ndarray (H,W,3)` |
-| `colorize_rgb` | DDColor で着色し RGB で返す | `gray_rgb`, `colorizer` → `np.ndarray (H,W,3)` |
-| `make_triple_compare` | 元／モノクロ／着色を横並びにしラベルを付ける | 3 枚の RGB → `np.ndarray (H',3W,3)` |
-| `colorize_face` | Gradio 用の一連推論 | `image`, `mirror` → `(元, モノクロ, 着色, 比較, 説明)` |
-| `build_demo` | Gradio Blocks を構築する | `sample_items`, `mirror_webcam` → `gr.Blocks` |
+| `duration_to_max_new_tokens` | 秒数を `max_new_tokens` に変換する | `duration_sec: float` → `int` |
+| `load_musicgen` | プロセッサとモデルを読み込む | `model_id`, `device` → `(processor, model, sampling_rate)` |
+| `generate_music` | プロンプトから音楽を生成する | `prompt`, `duration_sec`, `seed` → `((sr, waveform), note)` |
+| `build_demo` | Gradio UI を構築する | → `gr.Blocks` |
 
-DDColor 内部では入力を Lab に変換し，輝度 $L$ を保持したまま色差 $a$，$b$ を推定する．入力解像度は設定セルの `INPUT_SIZE`（既定 $512$）である．
+`generate_music` の戻り値における波形は `np.ndarray`（`float32`，shape=`(samples,)`）である．Gradio の `Audio(type="numpy")` には `(sampling_rate, waveform)` のタプルを渡す．
 
 ---
 
-## 5. Gradio UI の入出力
+## 5. Gradio UI
 
-| 種別 | コンポーネント | 内容 |
-| :--- | :--- | :--- |
-| 入力 | `gr.Image` | カメラ／アップロード（`webcam_options` でミラー設定） |
-| 入力 | `gr.Checkbox` | アップロード画像向けの左右反転 |
-| 出力 | `gr.Image` | 三点比較（元／モノクロ／着色） |
-| 出力 | `gr.Image` ×3 | 元画像，モノクロ画像，着色画像 |
-| 出力 | `gr.Textbox` | モデル名・解像度などの説明 |
-| 補助 | `gr.Examples` | インターネットから取得したサンプル顔写真 |
-
-ボタンクリックに加え，画像変更でも `colorize_face` を呼ぶ．
-
----
-
-## 6. 依存関係と認証
-
-- **実行基盤**: Google Colab，Python 3.12 系，CUDA 対応 PyTorch（T4 想定）
-- **主要ライブラリ**: `torch`，`opencv-python`，`Pillow`，`gradio`，`tqdm`，`huggingface_hub`
-- **モデルコード**: `git clone https://github.com/piddnad/DDColor.git`
-- **モデル取得**: `DDColorHF.from_pretrained("piddnad/{MODEL_NAME}")`
-- **API キー**: 不要
-- **Hugging Face ログイン**: 不要
-
----
-
-## 7. オーダー要件との対応
-
-| 要件 | 対応 |
+| 要素 | 役割 |
 | :--- | :--- |
-| Colab T4 で動作 | DDColor（既定 modelscope，必要なら tiny），解像度 512 |
-| Gradio で画像入力 | カメラ／アップロード／Examples |
-| サンプル入力 | Wikimedia / Pexels の顔写真を DL |
-| ipynb のみ | `OC_Colorize.ipynb` に完結 |
-| セル分割 | インストール／初期化／Gradio |
-| Colab バッジ | ノートブック先頭に配置 |
-| AI 着色 | 入力をモノクロ化し DDColor で着色 |
-| 撮影不要でも試せる | インターネット上のサンプル画像を用意 |
-| 三点対比 | 元画像・モノクロ・着色を個別表示＋横並び比較 |
+| プロンプト Textbox | 自然言語での音楽指定 |
+| 生成秒数 Slider | $2$〜$15$ 秒（長いほど推論時間が増加） |
+| シード Number | 再現用．負値でランダム |
+| 生成ボタン | `generate_music` を実行 |
+| Audio / 英語プロンプト | 結果の再生と翻訳確認 |
+| Examples | サンプルプロンプトのワンクリック入力 |
+
+---
+
+## 6. 依存と制約
+
+- **実行環境**: Google Colab，T4（VRAM 約 14GB）を想定する．
+- **API**: Gemini（`tokens.json` の `gemini`）が必要である．
+- **Hugging Face**: `facebook/musicgen-small` は公開モデルであり，認証は不要である．
+- **ライセンス**: MusicGen は CC-BY-NC 4.0（非営利）．教育デモ用途を想定する．
+- **品質**: 歌声付き楽曲や特定曲の再現は苦手なことが多い．短いインストゥルメンタル向けである．
